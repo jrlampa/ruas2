@@ -1,91 +1,37 @@
 
-import { OsmElement, GeoLocation, TerrainGrid, LayerConfig, ProjectionType, SimplificationLevel, ProjectMetadata } from '../../types';
-import { LAYERS, ROAD_WIDTHS, SLOPE_THRESHOLDS, HATCH_PATTERNS, TOLERANCE_MAP } from '../constants';
+import { OsmElement, GeoLocation, TerrainGrid, ProjectionType, TerrainPoint } from '../../types';
+import { LAYERS, ROAD_WIDTHS } from '../constants';
 
-// --- Math & Geometry Pro Helpers ---
+// --- Math & Geometry Utils ---
 
 const distance = (p1: {x:number, y:number}, p2: {x:number, y:number}) => {
     return Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
 };
 
-const normalizeAngle = (angle: number) => {
-    while (angle <= -Math.PI / 4) angle += Math.PI / 2;
-    while (angle > Math.PI / 4) angle -= Math.PI / 2;
-    return angle;
+const getCentroid = (points: {x:number, y:number}[]) => {
+    let x = 0, y = 0;
+    points.forEach(p => { x += p.x; y += p.y; });
+    return { x: x / points.length, y: y / points.length };
 };
 
-// Squaring algorithm for buildings
-const orthogonalize = (points: {x:number, y:number}[]) => {
-    if (points.length < 3) return points;
-    
-    // Calculate dominant orientation
-    let totalWeight = 0;
-    let weightedAngle = 0;
-    for (let i = 0; i < points.length - 1; i++) {
-        const p1 = points[i];
-        const p2 = points[i + 1];
-        const d = distance(p1, p2);
-        if (d === 0) continue;
-        const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
-        weightedAngle += normalizeAngle(angle) * d;
-        totalWeight += d;
-    }
-    const baseAngle = weightedAngle / totalWeight;
-
-    // Project points to orthogonal axes
-    const cosA = Math.cos(-baseAngle);
-    const sinA = Math.sin(-baseAngle);
-    
-    return points.map(p => {
-        // Rotate to align with axes
-        const rx = p.x * cosA - p.y * sinA;
-        const ry = p.x * sinA + p.y * cosA;
-        // Snap logic would happen here, but for DXF we mostly want consistent rotation
-        return p; 
-    });
-};
-
-const getOffsetPoints = (points: {x:number, y:number}[], offset: number) => {
-    const result: {x:number, y:number}[] = [];
-    for (let i = 0; i < points.length; i++) {
-        const p = points[i];
-        const prev = points[i - 1] || points[i];
-        const next = points[i + 1] || points[i];
-        
-        const a1 = Math.atan2(p.y - prev.y, p.x - prev.x);
-        const a2 = Math.atan2(next.y - p.y, next.x - p.x);
-        let angle = (a1 + a2) / 2 + Math.PI / 2;
-        
-        result.push({
-            x: p.x + Math.cos(angle) * offset,
-            y: p.y + Math.sin(angle) * offset
-        });
-    }
-    return result;
-};
-
-// --- Terrain & Contours ---
-
-const generateContours = (terrain: TerrainGrid, interval: number, zRef: number) => {
-    const contours: { elevation: number, points: {x:number, y:number}[] }[] = [];
-    if (!terrain || terrain.length < 2) return contours;
-
-    const elevations: number[] = [];
+const getElevationAt = (x: number, y: number, terrain: TerrainGrid | undefined, center: GeoLocation, projection: string, zone?: number): number => {
+    if (!terrain || terrain.length === 0) return 0;
+    // Simplificado: Busca o ponto mais próximo na malha
+    let minD = Infinity;
+    let elev = 0;
     const flat = terrain.flat();
-    const minZ = Math.min(...flat.map(p => p.elevation));
-    const maxZ = Math.max(...flat.map(p => p.elevation));
-
-    for (let z = Math.ceil(minZ / interval) * interval; z <= maxZ; z += interval) {
-        // Simplified Marching Squares or Grid Intersections
-        // For DXF evolution, we implement a path-following approach per grid cell
-        elevations.push(z);
+    for (const p of flat) {
+        const pt = project(p.lat, p.lng, center, projection as any, zone);
+        const d = distance({x, y}, pt);
+        if (d < minD) {
+            minD = d;
+            elev = p.elevation;
+        }
     }
-    
-    // Logic for isolines generation (simplified for structure)
-    return elevations.map(z => ({ elevation: z, points: [] }));
+    return elev;
 };
 
-// --- Projection Helpers ---
+// --- Projection Logic ---
 
 const toRadians = (deg: number) => deg * Math.PI / 180;
 
@@ -118,9 +64,53 @@ const project = (lat: number, lon: number, center: GeoLocation, type: Projection
   return { x: R * dLon * Math.cos(latRad), y: R * dLat };
 };
 
-// --- Main Service ---
+// --- Entities Generators ---
 
-const yieldToLoop = () => new Promise(resolve => setTimeout(resolve, 0));
+const generate3DFace = (p1: any, p2: any, p3: any, p4: any, layer: string) => {
+    return `0\n3DFACE\n8\n${layer}\n10\n${p1.x}\n20\n${p1.y}\n30\n${p1.z}\n11\n${p2.x}\n21\n${p2.y}\n31\n${p2.z}\n12\n${p3.x}\n22\n${p3.y}\n32\n${p3.z}\n13\n${p4.x}\n23\n${p4.y}\n33\n${p4.z}\n`;
+};
+
+const generateRoadCurb = (points: {x:number, y:number}[], width: number, layer: string): string => {
+    let s = '';
+    const offset = width / 2;
+    for (let i = 0; i < points.length - 1; i++) {
+        const p1 = points[i];
+        const p2 = points[i+1];
+        const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+        const perp = angle + Math.PI / 2;
+        
+        const L1 = { x: p1.x + Math.cos(perp) * offset, y: p1.y + Math.sin(perp) * offset };
+        const L2 = { x: p2.x + Math.cos(perp) * offset, y: p2.y + Math.sin(perp) * offset };
+        const R1 = { x: p1.x - Math.cos(perp) * offset, y: p1.y - Math.sin(perp) * offset };
+        const R2 = { x: p2.x - Math.cos(perp) * offset, y: p2.y - Math.sin(perp) * offset };
+        
+        s += `0\nLINE\n8\n${layer}\n10\n${L1.x}\n20\n${L1.y}\n11\n${L2.x}\n21\n${L2.y}\n`;
+        s += `0\nLINE\n8\n${layer}\n10\n${R1.x}\n20\n${R1.y}\n11\n${R2.x}\n21\n${R2.y}\n`;
+    }
+    return s;
+};
+
+const generateCrosswalk = (centerPt: {x:number, y:number}, angle: number, roadWidth: number): string => {
+    let s = '';
+    const stripeCount = 6;
+    const stripeWidth = 0.5;
+    const stripeLen = 4.0;
+    const perp = angle + Math.PI / 2;
+    
+    for (let i = -stripeCount/2; i < stripeCount/2; i++) {
+        const shift = i * 0.8;
+        const stripeCenter = {
+            x: centerPt.x + Math.cos(perp) * shift,
+            y: centerPt.y + Math.sin(perp) * shift
+        };
+        const p1 = { x: stripeCenter.x + Math.cos(angle) * (stripeLen/2), y: stripeCenter.y + Math.sin(angle) * (stripeLen/2) };
+        const p2 = { x: stripeCenter.x - Math.cos(angle) * (stripeLen/2), y: stripeCenter.y - Math.sin(angle) * (stripeLen/2) };
+        s += `0\nLINE\n8\n${LAYERS.ROADS_CROSSWALK.name}\n10\n${p1.x}\n20\n${p1.y}\n11\n${p2.x}\n21\n${p2.y}\n`;
+    }
+    return s;
+};
+
+// --- Main Service ---
 
 export const generateDXF = async (
   elements: OsmElement[], 
@@ -130,74 +120,70 @@ export const generateDXF = async (
   onProgress?: (progress: number, message: string) => void
 ): Promise<string> => {
 
-  const config = { 
-      simplificationLevel: 'off', 
-      layers: { buildings: true, roads: true, terrain: true, contours: true }, 
-      projection: 'local', 
-      orthogonalize: true,
-      contourInterval: 1,
-      ...options 
-  };
-
-  const customLayers = new Set<string>();
-  const zReference = config.projection === 'utm' ? 0 : (terrain?.[0]?.[0]?.elevation || 0);
+  const config = { projection: 'local', stationInterval: 20, extrudeBuildings: true, ...options };
   const forcedZone = config.projection === 'utm' ? latLonToUTM(center.lat, center.lng).zone : undefined;
-
   let entities = `0\nSECTION\n2\nENTITIES\n`;
 
-  // 1. Terrain Contours
-  if (config.layers.contours && terrain) {
-      if (onProgress) onProgress(10, "Gerando curvas de nível...");
-      const interval = config.contourInterval || 1;
-      // Contour drawing logic would add LWPOLYLINE here
-  }
-
-  // 2. Main Elements
   const total = elements.length;
-  for (let i = 0; i < total; i++) {
-    const el = elements[i];
-    if (i % 100 === 0) {
-      if (onProgress) onProgress(20 + (i/total)*70, "Processando geometria técnica...");
-      await yieldToLoop();
+  for (let index = 0; index < total; index++) {
+    const el = elements[index];
+    if (index % 100 === 0) {
+        if (onProgress) onProgress(70 + (index / total) * 30, "Gerando infraestrutura detalhada...");
+        await new Promise(r => setTimeout(r, 0));
     }
 
-    if (el.type === 'way' && el.geometry) {
-        let projected = el.geometry.map(p => project(p.lat, p.lon, center, config.projection, forcedZone));
+    if (el.type === 'way' && el.geometry && el.tags) {
+        const projected = el.geometry.map(p => project(p.lat, p.lon, center, config.projection, forcedZone));
         
-        if (el.tags?.building && config.orthogonalize) {
-            projected = orthogonalize(projected);
-            const layer = LAYERS.BLD_GENERIC.name;
-            const h = parseFloat(el.tags.height || '3');
-            entities += `0\nLWPOLYLINE\n8\n${layer}\n90\n${projected.length}\n70\n1\n`;
-            projected.forEach(p => entities += `10\n${p.x}\n20\n${p.y}\n`);
-            // Add elevation text
-            entities += `0\nTEXT\n8\nLABELS\n10\n${projected[0].x}\n20\n${projected[0].y}\n40\n0.8\n1\n${h}m\n`;
+        // 1. Edificações integradas ao terreno
+        if (el.tags.building && config.extrudeBuildings) {
+            const centerPt = getCentroid(projected);
+            const baseElev = getElevationAt(centerPt.x, centerPt.y, terrain, center, config.projection, forcedZone);
+            const height = parseFloat(el.tags.height || (el.tags['building:levels'] ? (parseFloat(el.tags['building:levels']) * 3.2).toString() : '3.5'));
+            
+            const wallLayer = el.tags.amenity === 'school' || el.tags.building === 'hospital' ? LAYERS.BLD_PUBLIC.name : LAYERS.BLD_WALLS.name;
+
+            for (let i = 0; i < projected.length - 1; i++) {
+                entities += generate3DFace(
+                    { ...projected[i], z: baseElev },
+                    { ...projected[i+1], z: baseElev },
+                    { ...projected[i+1], z: baseElev + height },
+                    { ...projected[i], z: baseElev + height },
+                    wallLayer
+                );
+            }
+            // Cobertura
+            if (projected.length <= 5) {
+                entities += generate3DFace(
+                    { ...projected[0], z: baseElev + height },
+                    { ...projected[1], z: baseElev + height },
+                    { ...projected[2], z: baseElev + height },
+                    { ...projected[3] ? { ...projected[3], z: baseElev + height } : { ...projected[0], z: baseElev + height } },
+                    LAYERS.BLD_ROOF.name
+                );
+            }
         }
-        
-        if (el.tags?.highway) {
+
+        // 2. Vias com Guias e Sarjetas
+        if (el.tags.highway) {
             const width = ROAD_WIDTHS[el.tags.highway] || 6;
-            const layer = LAYERS.ROADS_MINOR.name;
+            entities += generateRoadCurb(projected, width, LAYERS.ROADS_CURBS.name);
             
-            // Centerline
-            entities += `0\nLWPOLYLINE\n8\nROADS_CENTER\n90\n${projected.length}\n70\n0\n`;
-            projected.forEach(p => entities += `10\n${p.x}\n20\n${p.y}\n`);
-            
-            // Curbs (Guias)
-            if (config.layers.curbs) {
-                const left = getOffsetPoints(projected, width/2);
-                const right = getOffsetPoints(projected, -width/2);
-                [left, right].forEach(side => {
-                    entities += `0\nLWPOLYLINE\n8\nROADS_CURBS\n90\n${side.length}\n70\n0\n`;
-                    side.forEach(p => entities += `10\n${p.x}\n20\n${p.y}\n`);
-                });
+            // Faixas de Pedestre em cruzamentos
+            if (el.tags.highway === 'footway' && el.tags.footway === 'crossing') {
+                const mid = Math.floor(projected.length / 2);
+                const angle = Math.atan2(projected[mid+1]?.y - projected[mid]?.y || 0, projected[mid+1]?.x - projected[mid]?.x || 1);
+                entities += generateCrosswalk(projected[mid], angle, 10);
             }
         }
     }
   }
 
-  entities += `0\nENDSEC\n`;
-  
-  // Combine all sections (Header, Tables, Blocks, Entities)
+  // Header & Tables
   const header = `0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1015\n0\nENDSEC\n`;
-  return `${header}${entities}0\nEOF\n`;
+  const tables = `0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n70\n${Object.keys(LAYERS).length}\n` + 
+                 Object.values(LAYERS).map(l => `0\nLAYER\n2\n${l.name}\n70\n0\n62\n${l.color}\n6\nCONTINUOUS\n`).join('') + 
+                 `0\nENDTAB\n0\nENDSEC\n`;
+
+  return `${header}${tables}${entities}0\nENDSEC\n0\nEOF\n`;
 };
