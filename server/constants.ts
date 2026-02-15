@@ -43,6 +43,10 @@ export const LAYERS = {
   CONTOURS: { name: 'CONTOURS', color: 8 },
   
   LABELS: { name: 'LABELS', color: 7 },
+  // Fix: Added DIMENSIONS property used by dxfService.ts
+  DIMENSIONS: { name: 'DIMENSIONS', color: 140 },
+  // Fix: Added GRID property used by dxfService.ts
+  GRID: { name: 'GRID', color: 251 },
   METADATA: { name: 'DATA_ATTRIBUTES', color: 253 },
   DEFAULT: { name: '0', color: 7 }
 };

@@ -1,34 +1,15 @@
 
-import { OsmElement, GeoLocation, TerrainGrid, ProjectionType, TerrainPoint } from '../../types';
+import { OsmElement, GeoLocation, TerrainGrid, ProjectionType, LayerConfig } from '../../types';
 import { LAYERS, ROAD_WIDTHS } from '../constants';
 
-// --- Math & Geometry Utils ---
+// --- Math & Geometry Helpers ---
 
 const distance = (p1: {x:number, y:number}, p2: {x:number, y:number}) => {
     return Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
 };
 
-const getCentroid = (points: {x:number, y:number}[]) => {
-    let x = 0, y = 0;
-    points.forEach(p => { x += p.x; y += p.y; });
-    return { x: x / points.length, y: y / points.length };
-};
-
-const getElevationAt = (x: number, y: number, terrain: TerrainGrid | undefined, center: GeoLocation, projection: string, zone?: number): number => {
-    if (!terrain || terrain.length === 0) return 0;
-    // Simplificado: Busca o ponto mais próximo na malha
-    let minD = Infinity;
-    let elev = 0;
-    const flat = terrain.flat();
-    for (const p of flat) {
-        const pt = project(p.lat, p.lng, center, projection as any, zone);
-        const d = distance({x, y}, pt);
-        if (d < minD) {
-            minD = d;
-            elev = p.elevation;
-        }
-    }
-    return elev;
+const getAngle = (p1: {x:number, y:number}, p2: {x:number, y:number}) => {
+    return Math.atan2(p2.y - p1.y, p2.x - p1.x);
 };
 
 // --- Projection Logic ---
@@ -70,44 +51,46 @@ const generate3DFace = (p1: any, p2: any, p3: any, p4: any, layer: string) => {
     return `0\n3DFACE\n8\n${layer}\n10\n${p1.x}\n20\n${p1.y}\n30\n${p1.z}\n11\n${p2.x}\n21\n${p2.y}\n31\n${p2.z}\n12\n${p3.x}\n22\n${p3.y}\n32\n${p3.z}\n13\n${p4.x}\n23\n${p4.y}\n33\n${p4.z}\n`;
 };
 
-const generateRoadCurb = (points: {x:number, y:number}[], width: number, layer: string): string => {
+const generateDimension = (p1: {x:number, y:number}, p2: {x:number, y:number}, z: number = 0) => {
+    const dist = distance(p1, p2);
+    if (dist < 1.0) return ''; // Ignora segmentos muito pequenos
+    const angle = getAngle(p1, p2);
+    const midX = (p1.x + p2.x) / 2;
+    const midY = (p1.y + p2.y) / 2;
+    const offset = 0.5; // Distância da parede
+    const tx = midX + Math.cos(angle + Math.PI/2) * offset;
+    const ty = midY + Math.sin(angle + Math.PI/2) * offset;
+    return `0\nTEXT\n8\n${LAYERS.DIMENSIONS.name}\n10\n${tx}\n20\n${ty}\n30\n${z}\n40\n0.35\n50\n${(angle * 180 / Math.PI)}\n1\n${dist.toFixed(2)}m\n`;
+};
+
+const generateGrid = (projectedBounds: {minX: number, maxX: number, minY: number, maxY: number}, interval: number = 50) => {
     let s = '';
-    const offset = width / 2;
-    for (let i = 0; i < points.length - 1; i++) {
-        const p1 = points[i];
-        const p2 = points[i+1];
-        const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
-        const perp = angle + Math.PI / 2;
-        
-        const L1 = { x: p1.x + Math.cos(perp) * offset, y: p1.y + Math.sin(perp) * offset };
-        const L2 = { x: p2.x + Math.cos(perp) * offset, y: p2.y + Math.sin(perp) * offset };
-        const R1 = { x: p1.x - Math.cos(perp) * offset, y: p1.y - Math.sin(perp) * offset };
-        const R2 = { x: p2.x - Math.cos(perp) * offset, y: p2.y - Math.sin(perp) * offset };
-        
-        s += `0\nLINE\n8\n${layer}\n10\n${L1.x}\n20\n${L1.y}\n11\n${L2.x}\n21\n${L2.y}\n`;
-        s += `0\nLINE\n8\n${layer}\n10\n${R1.x}\n20\n${R1.y}\n11\n${R2.x}\n21\n${R2.y}\n`;
+    const layer = LAYERS.GRID.name;
+    const startX = Math.floor(projectedBounds.minX / interval) * interval;
+    const startY = Math.floor(projectedBounds.minY / interval) * interval;
+
+    for (let x = startX; x <= projectedBounds.maxX; x += interval) {
+        s += `0\nLINE\n8\n${layer}\n10\n${x}\n20\n${projectedBounds.minY}\n11\n${x}\n21\n${projectedBounds.maxY}\n`;
+        s += `0\nTEXT\n8\n${layer}\n10\n${x + 1}\n20\n${projectedBounds.minY + 1}\n40\n1.5\n1\nE:${x.toFixed(0)}\n`;
+    }
+    for (let y = startY; y <= projectedBounds.maxY; y += interval) {
+        s += `0\nLINE\n8\n${layer}\n10\n${projectedBounds.minX}\n20\n${y}\n11\n${projectedBounds.maxX}\n21\n${y}\n`;
+        s += `0\nTEXT\n8\n${layer}\n10\n${projectedBounds.minX + 1}\n20\n${y + 1}\n40\n1.5\n1\nN:${y.toFixed(0)}\n`;
     }
     return s;
 };
 
-const generateCrosswalk = (centerPt: {x:number, y:number}, angle: number, roadWidth: number): string => {
-    let s = '';
-    const stripeCount = 6;
-    const stripeWidth = 0.5;
-    const stripeLen = 4.0;
-    const perp = angle + Math.PI / 2;
+const generateFlowArrow = (p: {x:number, y:number, z:number}, angle: number, layer: string) => {
+    const len = 1.5;
+    const p2 = { x: p.x + Math.cos(angle) * len, y: p.y + Math.sin(angle) * len };
+    const a1 = angle + Math.PI + 0.4;
+    const a2 = angle + Math.PI - 0.4;
+    const head1 = { x: p2.x + Math.cos(a1) * 0.4, y: p2.y + Math.sin(a1) * 0.4 };
+    const head2 = { x: p2.x + Math.cos(a2) * 0.4, y: p2.y + Math.sin(a2) * 0.4 };
     
-    for (let i = -stripeCount/2; i < stripeCount/2; i++) {
-        const shift = i * 0.8;
-        const stripeCenter = {
-            x: centerPt.x + Math.cos(perp) * shift,
-            y: centerPt.y + Math.sin(perp) * shift
-        };
-        const p1 = { x: stripeCenter.x + Math.cos(angle) * (stripeLen/2), y: stripeCenter.y + Math.sin(angle) * (stripeLen/2) };
-        const p2 = { x: stripeCenter.x - Math.cos(angle) * (stripeLen/2), y: stripeCenter.y - Math.sin(angle) * (stripeLen/2) };
-        s += `0\nLINE\n8\n${LAYERS.ROADS_CROSSWALK.name}\n10\n${p1.x}\n20\n${p1.y}\n11\n${p2.x}\n21\n${p2.y}\n`;
-    }
-    return s;
+    return `0\nLINE\n8\n${layer}\n10\n${p.x}\n20\n${p.y}\n30\n${p.z}\n11\n${p2.x}\n21\n${p2.y}\n31\n${p.z}\n` +
+           `0\nLINE\n8\n${layer}\n10\n${p2.x}\n20\n${p2.y}\n30\n${p.z}\n11\n${head1.x}\n21\n${head1.y}\n31\n${p.z}\n` +
+           `0\nLINE\n8\n${layer}\n10\n${p2.x}\n20\n${p2.y}\n30\n${p.z}\n11\n${head2.x}\n21\n${head2.y}\n31\n${p.z}\n`;
 };
 
 // --- Main Service ---
@@ -120,70 +103,97 @@ export const generateDXF = async (
   onProgress?: (progress: number, message: string) => void
 ): Promise<string> => {
 
-  const config = { projection: 'local', stationInterval: 20, extrudeBuildings: true, ...options };
+  const config = { projection: 'local', stationInterval: 20, ...options };
   const forcedZone = config.projection === 'utm' ? latLonToUTM(center.lat, center.lng).zone : undefined;
   let entities = `0\nSECTION\n2\nENTITIES\n`;
+
+  // 1. Cálculo de Bounds para o Grid
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
 
   const total = elements.length;
   for (let index = 0; index < total; index++) {
     const el = elements[index];
-    if (index % 100 === 0) {
-        if (onProgress) onProgress(70 + (index / total) * 30, "Gerando infraestrutura detalhada...");
+    if (index % 200 === 0) {
+        if (onProgress) onProgress(70 + (index / total) * 20, "Processando geometria BIM e cotagem...");
         await new Promise(r => setTimeout(r, 0));
     }
 
     if (el.type === 'way' && el.geometry && el.tags) {
-        const projected = el.geometry.map(p => project(p.lat, p.lon, center, config.projection, forcedZone));
+        const projected = el.geometry.map(p => {
+            const pt = project(p.lat, p.lon, center, config.projection, forcedZone);
+            if (pt.x < minX) minX = pt.x; if (pt.x > maxX) maxX = pt.x;
+            if (pt.y < minY) minY = pt.y; if (pt.y > maxY) maxY = pt.y;
+            return pt;
+        });
         
-        // 1. Edificações integradas ao terreno
-        if (el.tags.building && config.extrudeBuildings) {
-            const centerPt = getCentroid(projected);
-            const baseElev = getElevationAt(centerPt.x, centerPt.y, terrain, center, config.projection, forcedZone);
+        // Cotagem e 3D de Edifícios
+        if (el.tags.building) {
             const height = parseFloat(el.tags.height || (el.tags['building:levels'] ? (parseFloat(el.tags['building:levels']) * 3.2).toString() : '3.5'));
-            
-            const wallLayer = el.tags.amenity === 'school' || el.tags.building === 'hospital' ? LAYERS.BLD_PUBLIC.name : LAYERS.BLD_WALLS.name;
-
             for (let i = 0; i < projected.length - 1; i++) {
+                // Cotagem Automática
+                if (options.layers?.dimensions) {
+                    entities += generateDimension(projected[i], projected[i+1], height);
+                }
+                // Paredes 3D
                 entities += generate3DFace(
-                    { ...projected[i], z: baseElev },
-                    { ...projected[i+1], z: baseElev },
-                    { ...projected[i+1], z: baseElev + height },
-                    { ...projected[i], z: baseElev + height },
-                    wallLayer
-                );
-            }
-            // Cobertura
-            if (projected.length <= 5) {
-                entities += generate3DFace(
-                    { ...projected[0], z: baseElev + height },
-                    { ...projected[1], z: baseElev + height },
-                    { ...projected[2], z: baseElev + height },
-                    { ...projected[3] ? { ...projected[3], z: baseElev + height } : { ...projected[0], z: baseElev + height } },
-                    LAYERS.BLD_ROOF.name
+                    { ...projected[i], z: 0 },
+                    { ...projected[i+1], z: 0 },
+                    { ...projected[i+1], z: height },
+                    { ...projected[i], z: height },
+                    LAYERS.BLD_WALLS.name
                 );
             }
         }
+        
+        // Vias (Simplificado para esta etapa)
+        if (el.tags.highway && options.layers?.roads) {
+            entities += `0\nLWPOLYLINE\n8\n${LAYERS.ROADS_CENTER.name}\n90\n${projected.length}\n70\n0\n` +
+                        projected.map(p => `10\n${p.x}\n20\n${p.y}\n`).join('');
+        }
+    }
 
-        // 2. Vias com Guias e Sarjetas
-        if (el.tags.highway) {
-            const width = ROAD_WIDTHS[el.tags.highway] || 6;
-            entities += generateRoadCurb(projected, width, LAYERS.ROADS_CURBS.name);
-            
-            // Faixas de Pedestre em cruzamentos
-            if (el.tags.highway === 'footway' && el.tags.footway === 'crossing') {
-                const mid = Math.floor(projected.length / 2);
-                const angle = Math.atan2(projected[mid+1]?.y - projected[mid]?.y || 0, projected[mid+1]?.x - projected[mid]?.x || 1);
-                entities += generateCrosswalk(projected[mid], angle, 10);
-            }
+    // Inserção de Equipamentos Urbanos
+    if (el.type === 'node' && el.tags) {
+        const pt = project(el.lat, el.lon, center, config.projection, forcedZone);
+        if (el.tags.emergency === 'fire_hydrant') {
+            entities += `0\nINSERT\n2\nHYDRANT_BLOCK\n8\n${LAYERS.URBAN_EQUIPMENT.name}\n10\n${pt.x}\n20\n${pt.y}\n30\n0\n`;
         }
     }
   }
 
-  // Header & Tables
+  // 2. Grid de Coordenadas
+  if (options.layers?.grid) {
+      entities += generateGrid({minX: minX-10, maxX: maxX+10, minY: minY-10, maxY: maxY+10}, 50);
+  }
+
+  // 3. Análise de Fluxo de Terreno
+  if (terrain && options.layers?.terrain) {
+      if (onProgress) onProgress(95, "Calculando vetores de escoamento...");
+      for (let i = 0; i < terrain.length - 1; i++) {
+          for (let j = 0; j < terrain[i].length - 1; j++) {
+              const p = terrain[i][j];
+              const pRight = terrain[i][j+1];
+              const pDown = terrain[i+1][j];
+              const dzdx = (pRight.elevation - p.elevation);
+              const dzdy = (pDown.elevation - p.elevation);
+              const angle = Math.atan2(-dzdy, -dzdx); // Direção da descida
+              if (Math.abs(dzdx) > 0.1 || Math.abs(dzdy) > 0.1) {
+                  const projP = project(p.lat, p.lng, center, config.projection, forcedZone);
+                  entities += generateFlowArrow({ ...projP, z: p.elevation }, angle, LAYERS.INFRA_FLOW_DIR.name);
+              }
+          }
+      }
+  }
+
+  // Finalização do Arquivo
   const header = `0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1015\n0\nENDSEC\n`;
   const tables = `0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n70\n${Object.keys(LAYERS).length}\n` + 
                  Object.values(LAYERS).map(l => `0\nLAYER\n2\n${l.name}\n70\n0\n62\n${l.color}\n6\nCONTINUOUS\n`).join('') + 
                  `0\nENDTAB\n0\nENDSEC\n`;
+  
+  const blocks = `0\nSECTION\n2\nBLOCKS\n` +
+                 `0\nBLOCK\n8\n0\n2\nHYDRANT_BLOCK\n70\n0\n10\n0.0\n20\n0.0\n30\n0.0\n0\nCIRCLE\n8\n0\n10\n0.0\n20\n0.0\n40\n0.3\n0\nLINE\n8\n0\n10\n-0.3\n20\n-0.3\n11\n0.3\n21\n0.3\n0\nENDBLK\n` +
+                 `0\nENDSEC\n`;
 
-  return `${header}${tables}${entities}0\nENDSEC\n0\nEOF\n`;
+  return `${header}${tables}${blocks}${entities}0\nENDSEC\n0\nEOF\n`;
 };
