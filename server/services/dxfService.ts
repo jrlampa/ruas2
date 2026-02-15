@@ -12,6 +12,15 @@ const getAngle = (p1: {x:number, y:number}, p2: {x:number, y:number}) => {
     return Math.atan2(p2.y - p1.y, p2.x - p1.x);
 };
 
+const interpolatePoint = (p1: {x:number, y:number}, p2: {x:number, y:number}, d: number) => {
+    const totalDist = distance(p1, p2);
+    const t = d / totalDist;
+    return {
+        x: p1.x + (p2.x - p1.x) * t,
+        y: p1.y + (p2.y - p1.y) * t
+    };
+};
+
 // --- Projection Logic ---
 
 const toRadians = (deg: number) => deg * Math.PI / 180;
@@ -47,50 +56,62 @@ const project = (lat: number, lon: number, center: GeoLocation, type: Projection
 
 // --- Entities Generators ---
 
-const generate3DFace = (p1: any, p2: any, p3: any, p4: any, layer: string) => {
-    return `0\n3DFACE\n8\n${layer}\n10\n${p1.x}\n20\n${p1.y}\n30\n${p1.z}\n11\n${p2.x}\n21\n${p2.y}\n31\n${p2.z}\n12\n${p3.x}\n22\n${p3.y}\n32\n${p3.z}\n13\n${p4.x}\n23\n${p4.y}\n33\n${p4.z}\n`;
-};
-
-const generateDimension = (p1: {x:number, y:number}, p2: {x:number, y:number}, z: number = 0) => {
-    const dist = distance(p1, p2);
-    if (dist < 1.0) return ''; // Ignora segmentos muito pequenos
-    const angle = getAngle(p1, p2);
-    const midX = (p1.x + p2.x) / 2;
-    const midY = (p1.y + p2.y) / 2;
-    const offset = 0.5; // Distância da parede
-    const tx = midX + Math.cos(angle + Math.PI/2) * offset;
-    const ty = midY + Math.sin(angle + Math.PI/2) * offset;
-    return `0\nTEXT\n8\n${LAYERS.DIMENSIONS.name}\n10\n${tx}\n20\n${ty}\n30\n${z}\n40\n0.35\n50\n${(angle * 180 / Math.PI)}\n1\n${dist.toFixed(2)}m\n`;
-};
-
-const generateGrid = (projectedBounds: {minX: number, maxX: number, minY: number, maxY: number}, interval: number = 50) => {
-    let s = '';
-    const layer = LAYERS.GRID.name;
-    const startX = Math.floor(projectedBounds.minX / interval) * interval;
-    const startY = Math.floor(projectedBounds.minY / interval) * interval;
-
-    for (let x = startX; x <= projectedBounds.maxX; x += interval) {
-        s += `0\nLINE\n8\n${layer}\n10\n${x}\n20\n${projectedBounds.minY}\n11\n${x}\n21\n${projectedBounds.maxY}\n`;
-        s += `0\nTEXT\n8\n${layer}\n10\n${x + 1}\n20\n${projectedBounds.minY + 1}\n40\n1.5\n1\nE:${x.toFixed(0)}\n`;
-    }
-    for (let y = startY; y <= projectedBounds.maxY; y += interval) {
-        s += `0\nLINE\n8\n${layer}\n10\n${projectedBounds.minX}\n20\n${y}\n11\n${projectedBounds.maxX}\n21\n${y}\n`;
-        s += `0\nTEXT\n8\n${layer}\n10\n${projectedBounds.minX + 1}\n20\n${y + 1}\n40\n1.5\n1\nN:${y.toFixed(0)}\n`;
-    }
+/**
+ * Adiciona Metadados OSM como XData (Extended Data)
+ * Código 1001 define a App, 1000 são strings.
+ */
+const generateXData = (tags: Record<string, string>) => {
+    let s = `1001\nOSM_ATTRIBUTES\n`;
+    Object.entries(tags).forEach(([k, v]) => {
+        const cleanV = v.toString().replace(/\n/g, ' ');
+        s += `1000\n${k}=${cleanV}\n`;
+    });
     return s;
 };
 
-const generateFlowArrow = (p: {x:number, y:number, z:number}, angle: number, layer: string) => {
-    const len = 1.5;
-    const p2 = { x: p.x + Math.cos(angle) * len, y: p.y + Math.sin(angle) * len };
-    const a1 = angle + Math.PI + 0.4;
-    const a2 = angle + Math.PI - 0.4;
-    const head1 = { x: p2.x + Math.cos(a1) * 0.4, y: p2.y + Math.sin(a1) * 0.4 };
-    const head2 = { x: p2.x + Math.cos(a2) * 0.4, y: p2.y + Math.sin(a2) * 0.4 };
-    
-    return `0\nLINE\n8\n${layer}\n10\n${p.x}\n20\n${p.y}\n30\n${p.z}\n11\n${p2.x}\n21\n${p2.y}\n31\n${p.z}\n` +
-           `0\nLINE\n8\n${layer}\n10\n${p2.x}\n20\n${p2.y}\n30\n${p.z}\n11\n${head1.x}\n21\n${head1.y}\n31\n${p.z}\n` +
-           `0\nLINE\n8\n${layer}\n10\n${p2.x}\n20\n${p2.y}\n30\n${p.z}\n11\n${head2.x}\n21\n${head2.y}\n31\n${p.z}\n`;
+const generate3DFace = (p1: any, p2: any, p3: any, p4: any, layer: string, tags?: Record<string, string>) => {
+    let s = `0\n3DFACE\n8\n${layer}\n10\n${p1.x}\n20\n${p1.y}\n30\n${p1.z}\n11\n${p2.x}\n21\n${p2.y}\n31\n${p2.z}\n12\n${p3.x}\n22\n${p3.y}\n32\n${p3.z}\n13\n${p4.x}\n23\n${p4.y}\n33\n${p4.z}\n`;
+    if (tags) s += generateXData(tags);
+    return s;
+};
+
+/**
+ * Gera estaqueamento (marks a cada 20m) ao longo de uma via.
+ */
+const generateStationing = (points: {x:number, y:number}[], interval: number = 20) => {
+    let s = '';
+    let accumulatedDist = 0;
+    let nextStationDist = 0;
+    const layer = LAYERS.ROADS_STATIONING.name;
+
+    for (let i = 0; i < points.length - 1; i++) {
+        const p1 = points[i];
+        const p2 = points[i+1];
+        const segDist = distance(p1, p2);
+        const angle = getAngle(p1, p2);
+        const perp = angle + Math.PI / 2;
+
+        while (nextStationDist <= accumulatedDist + segDist) {
+            const distInSeg = nextStationDist - accumulatedDist;
+            const pt = interpolatePoint(p1, p2, distInSeg);
+            const tickLen = 1.0;
+            const t1 = { x: pt.x + Math.cos(perp) * tickLen, y: pt.y + Math.sin(perp) * tickLen };
+            const t2 = { x: pt.x - Math.cos(perp) * tickLen, y: pt.y - Math.sin(perp) * tickLen };
+            
+            // Desenha o Tick (traço da estaca)
+            s += `0\nLINE\n8\n${layer}\n10\n${t1.x}\n20\n${t1.y}\n11\n${t2.x}\n21\n${t2.y}\n`;
+            
+            // Texto da Estaca (ex: 0+020)
+            const km = Math.floor(nextStationDist / 1000);
+            const m = nextStationDist % 1000;
+            const label = `${km}+${m.toString().padStart(3, '0')}`;
+            s += `0\nTEXT\n8\n${layer}\n10\n${t1.x + 0.5}\n20\n${t1.y + 0.5}\n40\n0.5\n50\n${angle * 180 / Math.PI}\n1\n${label}\n`;
+            
+            nextStationDist += interval;
+        }
+        accumulatedDist += segDist;
+    }
+    return s;
 };
 
 // --- Main Service ---
@@ -107,14 +128,13 @@ export const generateDXF = async (
   const forcedZone = config.projection === 'utm' ? latLonToUTM(center.lat, center.lng).zone : undefined;
   let entities = `0\nSECTION\n2\nENTITIES\n`;
 
-  // 1. Cálculo de Bounds para o Grid
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-
   const total = elements.length;
+
   for (let index = 0; index < total; index++) {
     const el = elements[index];
-    if (index % 200 === 0) {
-        if (onProgress) onProgress(70 + (index / total) * 20, "Processando geometria BIM e cotagem...");
+    if (index % 250 === 0) {
+        if (onProgress) onProgress(70 + (index / total) * 20, "Modelando infraestrutura inteligente...");
         await new Promise(r => setTimeout(r, 0));
     }
 
@@ -126,73 +146,76 @@ export const generateDXF = async (
             return pt;
         });
         
-        // Cotagem e 3D de Edifícios
+        // 1. Edificações com XData
         if (el.tags.building) {
             const height = parseFloat(el.tags.height || (el.tags['building:levels'] ? (parseFloat(el.tags['building:levels']) * 3.2).toString() : '3.5'));
             for (let i = 0; i < projected.length - 1; i++) {
-                // Cotagem Automática
-                if (options.layers?.dimensions) {
-                    entities += generateDimension(projected[i], projected[i+1], height);
-                }
-                // Paredes 3D
                 entities += generate3DFace(
                     { ...projected[i], z: 0 },
                     { ...projected[i+1], z: 0 },
                     { ...projected[i+1], z: height },
                     { ...projected[i], z: height },
-                    LAYERS.BLD_WALLS.name
+                    LAYERS.BLD_WALLS.name,
+                    el.tags // Adiciona metadados à face
                 );
             }
         }
         
-        // Vias (Simplificado para esta etapa)
+        // 2. Vias com Estaqueamento Automático
         if (el.tags.highway && options.layers?.roads) {
+            // Eixo da Via
             entities += `0\nLWPOLYLINE\n8\n${LAYERS.ROADS_CENTER.name}\n90\n${projected.length}\n70\n0\n` +
                         projected.map(p => `10\n${p.x}\n20\n${p.y}\n`).join('');
+            
+            // Se for via principal, gera estacas a cada 20m
+            if (['primary', 'secondary', 'tertiary', 'trunk'].includes(el.tags.highway)) {
+                entities += generateStationing(projected, config.stationInterval);
+            }
         }
     }
 
-    // Inserção de Equipamentos Urbanos
+    // 3. Blocos Simbólicos (Mobiliário/Vegetação)
     if (el.type === 'node' && el.tags) {
         const pt = project(el.lat, el.lon, center, config.projection, forcedZone);
-        if (el.tags.emergency === 'fire_hydrant') {
-            entities += `0\nINSERT\n2\nHYDRANT_BLOCK\n8\n${LAYERS.URBAN_EQUIPMENT.name}\n10\n${pt.x}\n20\n${pt.y}\n30\n0\n`;
+        let blockName = '';
+        let layer = LAYERS.DEFAULT.name;
+
+        if (el.tags.natural === 'tree') {
+            blockName = 'TREE_BLOCK';
+            layer = LAYERS.VEGETATION_TREE.name;
+        } else if (el.tags.highway === 'traffic_signals') {
+            blockName = 'SIGNAL_BLOCK';
+            layer = LAYERS.SIGNALS.name;
+        } else if (el.tags.emergency === 'fire_hydrant') {
+            blockName = 'HYDRANT_BLOCK';
+            layer = LAYERS.URBAN_EQUIPMENT.name;
+        } else if (el.tags.man_made === 'utility_pole' || el.tags.power === 'pole') {
+            blockName = 'POLE_BLOCK';
+            layer = LAYERS.INFRA_POWER_POLES.name;
+        }
+
+        if (blockName) {
+            entities += `0\nINSERT\n2\n${blockName}\n8\n${layer}\n10\n${pt.x}\n20\n${pt.y}\n30\n0\n`;
+            entities += generateXData(el.tags);
         }
     }
   }
 
-  // 2. Grid de Coordenadas
-  if (options.layers?.grid) {
-      entities += generateGrid({minX: minX-10, maxX: maxX+10, minY: minY-10, maxY: maxY+10}, 50);
-  }
-
-  // 3. Análise de Fluxo de Terreno
-  if (terrain && options.layers?.terrain) {
-      if (onProgress) onProgress(95, "Calculando vetores de escoamento...");
-      for (let i = 0; i < terrain.length - 1; i++) {
-          for (let j = 0; j < terrain[i].length - 1; j++) {
-              const p = terrain[i][j];
-              const pRight = terrain[i][j+1];
-              const pDown = terrain[i+1][j];
-              const dzdx = (pRight.elevation - p.elevation);
-              const dzdy = (pDown.elevation - p.elevation);
-              const angle = Math.atan2(-dzdy, -dzdx); // Direção da descida
-              if (Math.abs(dzdx) > 0.1 || Math.abs(dzdy) > 0.1) {
-                  const projP = project(p.lat, p.lng, center, config.projection, forcedZone);
-                  entities += generateFlowArrow({ ...projP, z: p.elevation }, angle, LAYERS.INFRA_FLOW_DIR.name);
-              }
-          }
-      }
-  }
-
-  // Finalização do Arquivo
+  // Finalização: Seções de Header, Tabelas e Definição de Blocos
   const header = `0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1015\n0\nENDSEC\n`;
   const tables = `0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n70\n${Object.keys(LAYERS).length}\n` + 
                  Object.values(LAYERS).map(l => `0\nLAYER\n2\n${l.name}\n70\n0\n62\n${l.color}\n6\nCONTINUOUS\n`).join('') + 
                  `0\nENDTAB\n0\nENDSEC\n`;
   
   const blocks = `0\nSECTION\n2\nBLOCKS\n` +
-                 `0\nBLOCK\n8\n0\n2\nHYDRANT_BLOCK\n70\n0\n10\n0.0\n20\n0.0\n30\n0.0\n0\nCIRCLE\n8\n0\n10\n0.0\n20\n0.0\n40\n0.3\n0\nLINE\n8\n0\n10\n-0.3\n20\n-0.3\n11\n0.3\n21\n0.3\n0\nENDBLK\n` +
+                 // HYDRANT
+                 `0\nBLOCK\n8\n0\n2\nHYDRANT_BLOCK\n70\n0\n10\n0.0\n20\n0.0\n30\n0.0\n0\nCIRCLE\n8\n0\n10\n0.0\n20\n0.0\n40\n0.4\n0\nLINE\n8\n0\n10\n-0.4\n20\n-0.4\n11\n0.4\n21\n0.4\n0\nENDBLK\n` +
+                 // TREE
+                 `0\nBLOCK\n8\n0\n2\nTREE_BLOCK\n70\n0\n10\n0.0\n20\n0.0\n30\n0.0\n0\nCIRCLE\n8\n0\n10\n0.0\n20\n0.0\n40\n1.2\n0\nLINE\n8\n0\n10\n0\n20\n-1.2\n11\n0\n21\n1.2\n0\nLINE\n8\n0\n10\n-1.2\n20\n0\n11\n1.2\n21\n0\n0\nENDBLK\n` +
+                 // POLE
+                 `0\nBLOCK\n8\n0\n2\nPOLE_BLOCK\n70\n0\n10\n0.0\n20\n0.0\n30\n0.0\n0\nCIRCLE\n8\n0\n10\n0.0\n20\n0.0\n40\n0.15\n0\nLWPOLYLINE\n8\n0\n90\n4\n70\n1\n10\n-0.2\n20\n-0.2\n10\n0.2\n20\n-0.2\n10\n0.2\n20\n0.2\n10\n-0.2\n20\n0.2\n0\nENDBLK\n` +
+                 // SIGNAL
+                 `0\nBLOCK\n8\n0\n2\nSIGNAL_BLOCK\n70\n0\n10\n0.0\n20\n0.0\n30\n0.0\n0\nCIRCLE\n8\n0\n10\n0.0\n20\n0.0\n40\n0.3\n0\nCIRCLE\n8\n0\n10\n0.0\n20\n0.0\n40\n0.5\n0\nENDBLK\n` +
                  `0\nENDSEC\n`;
 
   return `${header}${tables}${blocks}${entities}0\nENDSEC\n0\nEOF\n`;

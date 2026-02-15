@@ -11,7 +11,7 @@ export const LAYERS = {
   BLD_PUBLIC: { name: 'BLD_PUBLIC', color: 3 }, // Green
   
   ROADS_CENTER: { name: 'ROADS_CENTER', color: 1 },
-  ROADS_STATIONING: { name: 'ROADS_STATIONING', color: 7 }, // White for ticks/text
+  ROADS_STATIONING: { name: 'ROADS_STATIONING', color: 7 }, // White for ticks/text (Estaqueamento)
   ROADS_CURBS: { name: 'ROADS_CURBS', color: 8 }, // Dark Grey for curbs
   ROADS_SIDEWALKS: { name: 'ROADS_SIDEWALKS', color: 253 }, // Very Light Grey
   ROADS_MAJOR: { name: 'ROADS_MAJOR', color: 1 },
@@ -19,7 +19,7 @@ export const LAYERS = {
   ROADS_SERVICE: { name: 'ROADS_SERVICE', color: 252 },
   ROADS_CROSSWALK: { name: 'ROADS_CROSSWALK', color: 7 }, // White for zebra stripes
   
-  SIGNALS: { name: 'SIGNALS', color: 1 },
+  SIGNALS: { name: 'SIGNALS', color: 1 }, // Placas e semáforos
   FURNITURE: { name: 'FURNITURE', color: 34 },
   URBAN_EQUIPMENT: { name: 'URBAN_EQUIPMENT', color: 4 }, 
   
@@ -38,16 +38,15 @@ export const LAYERS = {
   // Landscape
   VEGETATION_TREE: { name: 'VEGETATION_TREE', color: 3 },
   VEGETATION_GRASS: { name: 'VEGETATION_GRASS', color: 112 },
+  VEGETATION_AREA: { name: 'VEGETATION_AREA', color: 3 }, // Áreas de bosque/mata
   
   TERRAIN: { name: 'TERRAIN', color: 9 },
   CONTOURS: { name: 'CONTOURS', color: 8 },
   
   LABELS: { name: 'LABELS', color: 7 },
-  // Fix: Added DIMENSIONS property used by dxfService.ts
   DIMENSIONS: { name: 'DIMENSIONS', color: 140 },
-  // Fix: Added GRID property used by dxfService.ts
   GRID: { name: 'GRID', color: 251 },
-  METADATA: { name: 'DATA_ATTRIBUTES', color: 253 },
+  METADATA: { name: 'DATA_ATTRIBUTES', color: 253 }, // XData visualization if needed
   DEFAULT: { name: '0', color: 7 }
 };
 
